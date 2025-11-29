@@ -26,11 +26,13 @@ def update_metrics(city):
     TEMP.labels(city=city).set(temp)
     CLOUD.labels(city=city).set(cloud)
 
-if __name__ == "__main__":
-    # Start Prometheus metrics server
-    start_http_server(8000)
-    city = "Harrogate"
+def can_call_city(city):
+    url = f"https://api.weatherapi.com/v1/current.json?key={weatherAPI}&q={city}&aqi=no"
+    data = requests.get(url)
+    return data.status_code
 
-    while True:
-        update_metrics(city)
-        time.sleep(15)
+if __name__ == "__main__":
+   with open("uk_cities.txt", "r") as file:   
+        array = list(map(lambda x: x.rstrip("\n"), file.readlines()))
+        file.close()
+        print(array)
