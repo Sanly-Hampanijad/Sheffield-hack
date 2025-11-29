@@ -75,7 +75,6 @@ def get_openmeteo_forecast(lat, lon, timezone="Europe/London"):
     url = "https://api.open-meteo.com/v1/forecast"
     r = requests.get(url, params=params, timeout=10)
 
-    print("Open-Meteo forecast request ->", r.url, "status:", r.status_code)
     try:
         r.raise_for_status()
     except Exception as e:
@@ -86,10 +85,8 @@ def get_openmeteo_forecast(lat, lon, timezone="Europe/London"):
 
     if "hourly" in data:
         h = data["hourly"]
-        print("hourly.time len:", len(h.get("time", [])))
     if "daily" in data:
         d = data["daily"]
-        print("daily.sunset len:", len(d.get("sunset", [])))
 
     return data
 
@@ -110,39 +107,32 @@ def get_openmeteo_air_quality(lat, lon, timezone="Europe/London"):
         raise
     data = r.json()
 
-    if "hourly" in data:
-        print("aq hourly.time len:", len(data["hourly"].get("time", [])))
     return data
 
 
-# 1. Extract the “current-hour index” from the hourly forecast - which hour corresponds to the current localtime
-# 2. Populate the guages to Prometheus
 # 3. compute sunset distance ?
 # 4. compute score (the math one)
-
 
 # Scoring Functions
 ## cloud layer score
 ## precip score
 ## air score
 
-def get_current_hour_index(localtime_str, hourly_times):
-    """
-    OpenMeteo returns hourly arrays with timestamps.
-    This function finds the index of the hour that is closest to the given localtime string.
-    so that we can extract the relevant hourly data for that time.
-    """
-    if not hourly_times:
+
+def get_sunset_hour_index(sunset_iso, hourly_times):
+    if not sunset_iso or not hourly_times:
         return None
 
-    now = datetime.fromisoformat(localtime_str.replace(" ", "T"))
-
-    # Convert to naive datetime list
+    sunset_dt = datetime.fromisoformat(sunset_iso)  # already ISO (e.g. 2025-11-29T15:56)
     hourly_dt = [datetime.fromisoformat(t) for t in hourly_times]
 
-    # Find nearest hour by absolute time distance
-    diffs = [abs((h - now).total_seconds()) for h in hourly_dt]
-    return diffs.index(min(diffs))
+    # Find hour nearest to sunset time
+    best_i = min(
+        range(len(hourly_dt)),
+        key=lambda i: abs((hourly_dt[i] - sunset_dt).total_seconds())
+    )
+    return best_i
+
 
 def compute(city):
     raw = collect_raw_data(city)
@@ -159,37 +149,22 @@ def compute(city):
     hourly_times = forecast.get("hourly_time", [])
     localtime = raw.get("localtime")
 
-    # Get nearest-hour index
-    idx = get_current_hour_index(localtime, hourly_times)
+    # --- SUNSET HOUR VALUES ---
+    sunset_list = raw["forecast"]["sunset_daily"]
+    hourly_times = raw["forecast"]["hourly_time"]
 
-    # Debug: show index and a small neighborhood of times
-    if idx is None:
-        print("DEBUG: hourly_times empty or idx is None")
-    else:
-        # Show chosen index and a short window around it
-        start = max(0, idx - 2)
-        end = min(len(hourly_times), idx + 3)
-        print(f"DEBUG: chosen idx={idx}, nearest_hour={hourly_times[idx]}")
-        print("DEBUG: time window:", hourly_times[start:end])
+    if sunset_list:
+        sunset_iso = sunset_list[0]  # today's sunset
+        sunset_idx = get_sunset_hour_index(sunset_iso, hourly_times)
 
-    # Safely fetch values (guard against missing arrays/short lengths)
-    def safe(arr, i, default=None):
-        try:
-            return arr[i]
-        except Exception:
-            return default
-
-    if idx is not None:
-        clow = safe(forecast.get("cloudcover_low", []), idx, None)
-        cmid = safe(forecast.get("cloudcover_mid", []), idx, None)
-        chigh = safe(forecast.get("cloudcover_high", []), idx, None)
-        precip = safe(forecast.get("precipitation_probability", []), idx, None)
-
-        pm25 = safe(aq.get("pm2_5", []), idx, None)
-        aod = safe(aq.get("aod", []), idx, None)
-
-        # Print the selected values so we can inspect
-        print(f"DEBUG VALUES @ idx {idx}: cloud_low={clow}, cloud_mid={cmid}, cloud_high={chigh}, precip_prob={precip}, pm2_5={pm25}, aod={aod}")
+        clow = raw["forecast"]["cloudcover_low"][sunset_idx]
+        cmid = raw["forecast"]["cloudcover_mid"][sunset_idx]
+        chigh = raw["forecast"]["cloudcover_high"][sunset_idx]
+        precip = raw["forecast"]["precipitation_probability"][sunset_idx]
+        pm25 = raw["air_quality"]["pm2_5"][sunset_idx]
+        aod = raw["air_quality"]["aod"][sunset_idx]
+        
+        print(f"DEBUG: sunset_idx={sunset_idx} clow={clow} cmid={cmid} chigh={chigh} precip={precip} pm25={pm25} aod={aod}")
 
         # Populate gauges, only if value is not None
         if clow is not None:
@@ -221,7 +196,6 @@ def compute(city):
             minutes_from_sunset = (lt_dt - st_dt).total_seconds() / 60.0  # negative = before sunset
             G_MINUTES_FROM_SUNSET.labels(city=city).set(minutes_from_sunset)
             G_SUNSET_WINDOW.labels(city=city).set(1.0 if abs(minutes_from_sunset) <= 45.0 else 0.0)
-            print(f"DEBUG: localtime={lt_dt.isoformat()}, sunset={st_dt.isoformat()}, minutes_from_sunset={minutes_from_sunset:.1f}")
         else:
             print("DEBUG: no sunset_daily value available")
     except Exception as e:
