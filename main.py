@@ -187,6 +187,9 @@ if __name__ == "__main__":
     # Start Prometheus metrics server
     start_http_server(8000)
     city = "Harrogate"
+        
+    with open("uk_cities.txt", "r") as file:   
+        cities_array = list(map(lambda x: x.rstrip("\n"), file.readlines()))
 
     while True:
         try:
