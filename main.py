@@ -1,22 +1,36 @@
 import requests
 import os
-
+from prometheus_client import start_http_server, Gauge
 from dotenv import load_dotenv
+import time
 
 load_dotenv()
-
-env = os.getenv("API_KEY")
-if not env:
+weatherAPI = os.getenv("API_KEY")
+if not weatherAPI:
     raise ValueError("API_KEY not found in environment variables")
 
-def get_weather(city):
-    url = f"https://api.weatherapi.com/v1/current.json?key={env}&q={city}&aqi=no"
-    data = requests.get(url).json()
-    return data["current"]["temp_c"], data["current"]["cloud"]
-    
-def get_sunnyness(city):
-    url = f"https://api.weatherapi.com/v1/current.json?key={env}&q={city}&aqi=no"
-    data = requests.get(url).json()
-    return data
+TEMP = Gauge("temperature", "Temperature in Celsius", ["city"])
+CLOUD = Gauge("cloud_cover", "Cloud cover percentage", ["city"])
+#LAT = Gauge("lat", "City Latitude", ["city"])
+#LONG = Gauge("lon", "City Longitude", ["city"])
 
-print(get_sunnyness("Leeds"))
+def get_weather(city):
+    url = f"https://api.weatherapi.com/v1/current.json?key={weatherAPI}&q={city}&aqi=no"
+    data = requests.get(url).json()
+    temp = data["current"]["temp_c"]
+    cloud = data["current"]["cloud"]
+    return temp, cloud
+
+def update_metrics(city):
+    temp, cloud = get_weather(city)
+    TEMP.labels(city=city).set(temp)
+    CLOUD.labels(city=city).set(cloud)
+
+if __name__ == "__main__":
+    # Start Prometheus metrics server
+    start_http_server(8000)
+    city = "Harrogate"
+
+    while True:
+        update_metrics(city)
+        time.sleep(15)
