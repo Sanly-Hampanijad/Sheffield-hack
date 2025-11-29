@@ -183,6 +183,11 @@ def collect_raw_data(city):
 
     return raw
 
+def can_call_city(city):
+    url = f"https://api.weatherapi.com/v1/current.json?key={weatherAPI}&q={city}&aqi=no"
+    data = requests.get(url)
+    return data.status_code
+
 if __name__ == "__main__":
     # Start Prometheus metrics server
     start_http_server(8000)
