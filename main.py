@@ -9,7 +9,14 @@ env = os.getenv("API_KEY")
 if not env:
     raise ValueError("API_KEY not found in environment variables")
 
+def get_weather(city):
+    url = f"https://api.weatherapi.com/v1/current.json?key={env}&q={city}&aqi=no"
+    data = requests.get(url).json()
+    return data["current"]["temp_c"], data["current"]["cloud"]
+    
+def get_sunnyness(city):
+    url = f"https://api.weatherapi.com/v1/current.json?key={env}&q={city}&aqi=no"
+    data = requests.get(url).json()
+    return data
 
-response = requests.get("https://api.weatherapi.com/v1/current.json?key="+ env + "&q=London&aqi=no")
-
-print(response.json())
+print(get_sunnyness("Leeds"))
