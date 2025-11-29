@@ -75,7 +75,6 @@ def get_openmeteo_forecast(lat, lon, timezone="Europe/London"):
     url = "https://api.open-meteo.com/v1/forecast"
     r = requests.get(url, params=params, timeout=10)
 
-    print("Open-Meteo forecast request ->", r.url, "status:", r.status_code)
     try:
         r.raise_for_status()
     except Exception as e:
@@ -86,10 +85,8 @@ def get_openmeteo_forecast(lat, lon, timezone="Europe/London"):
 
     if "hourly" in data:
         h = data["hourly"]
-        print("hourly.time len:", len(h.get("time", [])))
     if "daily" in data:
         d = data["daily"]
-        print("daily.sunset len:", len(d.get("sunset", [])))
 
     return data
 
@@ -110,34 +107,103 @@ def get_openmeteo_air_quality(lat, lon, timezone="Europe/London"):
         raise
     data = r.json()
 
-    if "hourly" in data:
-        print("aq hourly.time len:", len(data["hourly"].get("time", [])))
     return data
 
 
-# 1. Extract the “current-hour index” from the hourly forecast - which hour corresponds to the current localtime
-# 2. Populate the guages to Prometheus
 # 3. compute sunset distance ?
 # 4. compute score (the math one)
-
 
 # Scoring Functions
 ## cloud layer score
 ## precip score
 ## air score
 
+
+def get_sunset_hour_index(sunset_iso, hourly_times):
+    if not sunset_iso or not hourly_times:
+        return None
+
+    sunset_dt = datetime.fromisoformat(sunset_iso)  # already ISO (e.g. 2025-11-29T15:56)
+    hourly_dt = [datetime.fromisoformat(t) for t in hourly_times]
+
+    # Find hour nearest to sunset time
+    best_i = min(
+        range(len(hourly_dt)),
+        key=lambda i: abs((hourly_dt[i] - sunset_dt).total_seconds())
+    )
+    return best_i
+
+
 def compute(city):
-    # Get weather data from weather api and open meteo
-    # call funct to formulate final score
-    # print or return final score
-    #
     raw = collect_raw_data(city)
 
-    print("\n === Raw Data ===")
-    for k, v in raw.items():
-        print(f"{k}: {v}")
+    # Populate basic WeatherAPI gauges immediately
+    G_TEMP.labels(city=city).set(raw["temp_c"] or 0.0)
+    G_CLOUD.labels(city=city).set(raw["cloud_overall"] or 0.0)
+    G_VIS.labels(city=city).set(raw["visibility_km"] or 0.0)
+    G_HUM.labels(city=city).set(raw["humidity_pct"] or 0.0)
 
+    # Extract forecast and aq arrays
+    forecast = raw["forecast"]
+    aq = raw["air_quality"]
+    hourly_times = forecast.get("hourly_time", [])
+    localtime = raw.get("localtime")
+
+    # --- SUNSET HOUR VALUES ---
+    sunset_list = raw["forecast"]["sunset_daily"]
+    hourly_times = raw["forecast"]["hourly_time"]
+
+    if sunset_list:
+        sunset_iso = sunset_list[0]  # today's sunset
+        sunset_idx = get_sunset_hour_index(sunset_iso, hourly_times)
+
+        clow = raw["forecast"]["cloudcover_low"][sunset_idx]
+        cmid = raw["forecast"]["cloudcover_mid"][sunset_idx]
+        chigh = raw["forecast"]["cloudcover_high"][sunset_idx]
+        precip = raw["forecast"]["precipitation_probability"][sunset_idx]
+        pm25 = raw["air_quality"]["pm2_5"][sunset_idx]
+        aod = raw["air_quality"]["aod"][sunset_idx]
+        
+        print(f"DEBUG: sunset_idx={sunset_idx} clow={clow} cmid={cmid} chigh={chigh} precip={precip} pm25={pm25} aod={aod}")
+
+        # Populate gauges, only if value is not None
+        if clow is not None:
+            G_CLOUD_LOW.labels(city=city).set(clow)
+        if cmid is not None:
+            G_CLOUD_MID.labels(city=city).set(cmid)
+        if chigh is not None:
+            G_CLOUD_HIGH.labels(city=city).set(chigh)
+        if precip is not None:
+            G_PRECIP_PROB.labels(city=city).set(precip)
+        if pm25 is not None:
+            G_PM25.labels(city=city).set(pm25)
+        if aod is not None:
+            G_AOD.labels(city=city).set(aod)
+
+    else:
+        print("DEBUG: no index found; skipping forecast gauge population.")
+
+    # Compute minutes_from_sunset and set its gauge (if sunset available)
+    try:
+        # pick today's sunset from forecast (first daily entry)
+        sunset_list = forecast.get("sunset_daily", [])
+        if sunset_list:
+            sunset_iso = sunset_list[0]  # e.g. '2025-11-29T15:56'
+            # normalize localtime -> ISO
+            lt_iso = localtime.replace(" ", "T")
+            lt_dt = datetime.fromisoformat(lt_iso)
+            st_dt = datetime.fromisoformat(sunset_iso)
+            minutes_from_sunset = (lt_dt - st_dt).total_seconds() / 60.0  # negative = before sunset
+            G_MINUTES_FROM_SUNSET.labels(city=city).set(minutes_from_sunset)
+            G_SUNSET_WINDOW.labels(city=city).set(1.0 if abs(minutes_from_sunset) <= 45.0 else 0.0)
+        else:
+            print("DEBUG: no sunset_daily value available")
+    except Exception as e:
+        print("DEBUG: error computing minutes_from_sunset:", e)
+
+    # Return raw for further inspection if caller wants it
     return raw
+
 
 def collect_raw_data(city):
     """ calls weatherapi, openmeteo and openmeteo air quality,
