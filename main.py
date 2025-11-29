@@ -1,5 +1,6 @@
 import requests
 import os
+from prometheus_client import start_http_server, Gauge
 from dotenv import load_dotenv
 import time
 
@@ -31,9 +32,12 @@ def can_call_city(city):
     return data.status_code
 
 if __name__ == "__main__":
-    # Start Prometheus metrics server
     with open("uk_cities.txt", "r") as file:   
         cities_array = list(map(lambda x: x.rstrip("\n"), file.readlines()))
-        
-            
-        
+    # Start Prometheus metrics server
+    start_http_server(8000)
+    city = "Leeds"
+
+    while True:
+        update_metrics(city)
+        time.sleep(15)
