@@ -1,9 +1,9 @@
 import requests
 import os
-
+from prometheus_client import Gauge, start_http_server
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
-
+import time
 
 load_dotenv()
 
