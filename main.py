@@ -126,18 +126,110 @@ def get_openmeteo_air_quality(lat, lon, timezone="Europe/London"):
 ## precip score
 ## air score
 
+def get_current_hour_index(localtime_str, hourly_times):
+    """
+    OpenMeteo returns hourly arrays with timestamps.
+    This function finds the index of the hour that is closest to the given localtime string.
+    so that we can extract the relevant hourly data for that time.
+    """
+    if not hourly_times:
+        return None
+
+    now = datetime.fromisoformat(localtime_str.replace(" ", "T"))
+
+    # Convert to naive datetime list
+    hourly_dt = [datetime.fromisoformat(t) for t in hourly_times]
+
+    # Find nearest hour by absolute time distance
+    diffs = [abs((h - now).total_seconds()) for h in hourly_dt]
+    return diffs.index(min(diffs))
+
 def compute(city):
-    # Get weather data from weather api and open meteo
-    # call funct to formulate final score
-    # print or return final score
-    #
     raw = collect_raw_data(city)
 
-    print("\n === Raw Data ===")
-    for k, v in raw.items():
-        print(f"{k}: {v}")
+    # Populate basic WeatherAPI gauges immediately
+    G_TEMP.labels(city=city).set(raw["temp_c"] or 0.0)
+    G_CLOUD.labels(city=city).set(raw["cloud_overall"] or 0.0)
+    G_VIS.labels(city=city).set(raw["visibility_km"] or 0.0)
+    G_HUM.labels(city=city).set(raw["humidity_pct"] or 0.0)
 
+    # Extract forecast and aq arrays
+    forecast = raw["forecast"]
+    aq = raw["air_quality"]
+    hourly_times = forecast.get("hourly_time", [])
+    localtime = raw.get("localtime")
+
+    # Get nearest-hour index
+    idx = get_current_hour_index(localtime, hourly_times)
+
+    # Debug: show index and a small neighborhood of times
+    if idx is None:
+        print("DEBUG: hourly_times empty or idx is None")
+    else:
+        # Show chosen index and a short window around it
+        start = max(0, idx - 2)
+        end = min(len(hourly_times), idx + 3)
+        print(f"DEBUG: chosen idx={idx}, nearest_hour={hourly_times[idx]}")
+        print("DEBUG: time window:", hourly_times[start:end])
+
+    # Safely fetch values (guard against missing arrays/short lengths)
+    def safe(arr, i, default=None):
+        try:
+            return arr[i]
+        except Exception:
+            return default
+
+    if idx is not None:
+        clow = safe(forecast.get("cloudcover_low", []), idx, None)
+        cmid = safe(forecast.get("cloudcover_mid", []), idx, None)
+        chigh = safe(forecast.get("cloudcover_high", []), idx, None)
+        precip = safe(forecast.get("precipitation_probability", []), idx, None)
+
+        pm25 = safe(aq.get("pm2_5", []), idx, None)
+        aod = safe(aq.get("aod", []), idx, None)
+
+        # Print the selected values so we can inspect
+        print(f"DEBUG VALUES @ idx {idx}: cloud_low={clow}, cloud_mid={cmid}, cloud_high={chigh}, precip_prob={precip}, pm2_5={pm25}, aod={aod}")
+
+        # Populate gauges, only if value is not None
+        if clow is not None:
+            G_CLOUD_LOW.labels(city=city).set(clow)
+        if cmid is not None:
+            G_CLOUD_MID.labels(city=city).set(cmid)
+        if chigh is not None:
+            G_CLOUD_HIGH.labels(city=city).set(chigh)
+        if precip is not None:
+            G_PRECIP_PROB.labels(city=city).set(precip)
+        if pm25 is not None:
+            G_PM25.labels(city=city).set(pm25)
+        if aod is not None:
+            G_AOD.labels(city=city).set(aod)
+
+    else:
+        print("DEBUG: no index found; skipping forecast gauge population.")
+
+    # Compute minutes_from_sunset and set its gauge (if sunset available)
+    try:
+        # pick today's sunset from forecast (first daily entry)
+        sunset_list = forecast.get("sunset_daily", [])
+        if sunset_list:
+            sunset_iso = sunset_list[0]  # e.g. '2025-11-29T15:56'
+            # normalize localtime -> ISO
+            lt_iso = localtime.replace(" ", "T")
+            lt_dt = datetime.fromisoformat(lt_iso)
+            st_dt = datetime.fromisoformat(sunset_iso)
+            minutes_from_sunset = (lt_dt - st_dt).total_seconds() / 60.0  # negative = before sunset
+            G_MINUTES_FROM_SUNSET.labels(city=city).set(minutes_from_sunset)
+            G_SUNSET_WINDOW.labels(city=city).set(1.0 if abs(minutes_from_sunset) <= 45.0 else 0.0)
+            print(f"DEBUG: localtime={lt_dt.isoformat()}, sunset={st_dt.isoformat()}, minutes_from_sunset={minutes_from_sunset:.1f}")
+        else:
+            print("DEBUG: no sunset_daily value available")
+    except Exception as e:
+        print("DEBUG: error computing minutes_from_sunset:", e)
+
+    # Return raw for further inspection if caller wants it
     return raw
+
 
 def collect_raw_data(city):
     """ calls weatherapi, openmeteo and openmeteo air quality,
