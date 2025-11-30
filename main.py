@@ -129,13 +129,29 @@ def precipitation_score(precip_prob_pct):
 
 def air_quality_score(pm25_ugm3, aod):
     # Normalize PM2.5 to 0-50=good, >150=bad
-    pm_score = clamp01(1.0 - min(150, pm25)/150)
+    pm_score = clamp01(1.0 - min(150, pm25_ugm3)/150) # cap at 150
     aod_score = clamp01(1.0 - min(1.0, aod))  # AOD typically 0-1
     air_score = 0.5*pm_score + 0.5*aod_score
-    return air_score
+    return clamp01(air_score)
+
 def time_score(minutes_from_sunset):
     # ideal is 0 (sunset time), linear dropoff to 0 at ±45 minutes
+    # might drop this out entirely, decide tomorrow
     return clamp01(1 - (abs(minutes_from_sunset) / 60.0))
+
+def sunset_probability(cloud, precip, air, time):
+    cloud = cloud_layer_score(G_CLOUD_LOW, G_CLOUD_MID, G_CLOUD_HIGH)
+    precip = precipitation_score(G_PRECIP_PROB)
+    air = air_quality_score(G_PM25, G_AOD)
+    time = time_score(G_MINUTES_FROM_SUNSET)
+    
+    result = clamp01(
+        WEIGHTS["cloud"] * cloud +
+        WEIGHTS["precip"] * precip +
+        WEIGHTS["air"] * air +
+        WEIGHTS[time])
+    
+    return result
 
 def get_sunset_hour_index(sunset_iso, hourly_times):
     if not sunset_iso or not hourly_times:
