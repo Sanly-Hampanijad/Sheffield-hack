@@ -75,7 +75,7 @@ def get_openmeteo_forecast(lat, lon, timezone="Europe/London"):
     url = "https://api.open-meteo.com/v1/forecast"
     r = requests.get(url, params=params, timeout=10)
 
-    print("Open-Meteo forecast request ->", r.url, "status:", r.status_code)
+    #print("Open-Meteo forecast request ->", r.url, "status:", r.status_code)
     try:
         r.raise_for_status()
     except Exception as e:
@@ -86,10 +86,10 @@ def get_openmeteo_forecast(lat, lon, timezone="Europe/London"):
 
     if "hourly" in data:
         h = data["hourly"]
-        print("hourly.time len:", len(h.get("time", [])))
+        #print("hourly.time len:", len(h.get("time", [])))
     if "daily" in data:
         d = data["daily"]
-        print("daily.sunset len:", len(d.get("sunset", [])))
+        #print("daily.sunset len:", len(d.get("sunset", [])))
 
     return data
 
@@ -133,7 +133,7 @@ def compute(city):
     #
     raw = collect_raw_data(city)
 
-    print("\n === Raw Data ===")
+    #print("\n === Raw Data ===")
     for k, v in raw.items():
         print(f"{k}: {v}")
 
@@ -183,18 +183,46 @@ def collect_raw_data(city):
 
     return raw
 
+def update_city_metrics(city):
+    try: 
+        raw = collect_raw_data(city)
+    except Exception as e:
+        print(f"[{city}] Couldnt find this city")
+        return
+    
+    G_TEMP.labels(city).set(raw["temp_c"])
+    G_CLOUD.labels(city).set(raw["cloud_overall"])
+    G_VIS.labels(city).set(raw["visibility_km"])
+    G_HUM.labels(city).set(raw["humidity_pct"])
+
+    try:
+        hourly_times = raw["forecast"]["hourly_time"]
+        current_local = raw["localtime"]
+        hour_index = hourly_times.index(current_local + ":00")
+    except:
+        hour_index = 0
+    G_CLOUD_LOW.labels(city).set(raw["forecast"]["cloudcover_low"][hour_index])
+    G_CLOUD_MID.labels(city).set(raw["forecast"]["cloudcover_mid"][hour_index])
+    G_CLOUD_HIGH.labels(city).set(raw["forecast"]["cloudcover_high"][hour_index])
+    G_PRECIP_PROB.labels(city).set(raw["forecast"]["precipitation_probability"][hour_index])
+    if raw["air_quality"]["pm2_5"]:
+        G_PM25.labels(city).set(raw["air_quality"]["pm2_5"][hour_index])
+    if raw["air_quality"]["aod"]:
+        G_AOD.labels(city).set(raw["air_quality"]["aod"][hour_index])
+
+    G_SUNSET_PROB.labels(city).set(0) # nabeelah do this oneee
+
+
 if __name__ == "__main__":
     # Start Prometheus metrics server
     start_http_server(8000)
-    city = "Harrogate"
         
     with open("uk_cities.txt", "r") as file:   
-        cities_array = list(map(lambda x: x.rstrip("\n"), file.readlines()))
+        cities_array = [c.strip() for c in file.readlines() if c.strip()]
 
     while True:
-        try:
-            # do the thing
-            compute("London")
-        except Exception as e:
-            print(f"Error occurred: {e}")
+        for city in cities_array:
+            update_city_metrics(city)
+            #time.sleep(1)
+
         time.sleep(15)
