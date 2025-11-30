@@ -287,12 +287,12 @@ def update_city_metrics(city):
     if raw["air_quality"]["aod"]:
         G_AOD.labels(city).set(raw["air_quality"]["aod"][hour_index])
 
-    G_SUNSET_PROB.labels(city).set(prob) # nabeelah do this oneee
+    G_SUNSET_PROB.labels(city).set(prob * 100) # nabeelah do this oneee
 
 
 if __name__ == "__main__":
     # Start Prometheus metrics server
-    start_http_server(8000)
+    start_http_server(8500)
         
     with open("uk_cities.txt", "r") as file:   
         cities_array = [c.strip() for c in file.readlines() if c.strip()]
