@@ -110,14 +110,32 @@ def get_openmeteo_air_quality(lat, lon, timezone="Europe/London"):
     return data
 
 
-# 3. compute sunset distance ?
-# 4. compute score (the math one)
-
 # Scoring Functions
-## cloud layer score
-## precip score
-## air score
+## cloud layer score - high & mid clouds = good, low clouds = bad
+## precip score - precip = bad
+## air score - 
+## time score - no need to include here
 
+def cloud_layer_score(clow, cmid, chigh):
+    # Normalize to 0-1
+    low_score = 1 - (clow / 100.0)
+    mid_score = cmid/100
+    high_score = chigh/100
+
+    return clamp01((0.3*low_score + 0.3*mid_score + 0.4*high_score))
+
+def precipitation_score(precip_prob_pct):
+    return clamp01(1 - (precip_prob_pct / 100.0))
+
+def air_quality_score(pm25_ugm3, aod):
+    # Normalize PM2.5 to 0-50=good, >150=bad
+    pm_score = clamp01(1.0 - min(150, pm25)/150)
+    aod_score = clamp01(1.0 - min(1.0, aod))  # AOD typically 0-1
+    air_score = 0.5*pm_score + 0.5*aod_score
+    return air_score
+def time_score(minutes_from_sunset):
+    # ideal is 0 (sunset time), linear dropoff to 0 at ±45 minutes
+    return clamp01(1 - (abs(minutes_from_sunset) / 60.0))
 
 def get_sunset_hour_index(sunset_iso, hourly_times):
     if not sunset_iso or not hourly_times:
