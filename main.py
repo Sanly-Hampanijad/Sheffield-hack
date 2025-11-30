@@ -28,18 +28,6 @@ G_MINUTES_FROM_SUNSET = Gauge("minutes_from_sunset", "Minutes from sunset (local
 G_SUNSET_WINDOW = Gauge("sunset_window_flag", "1 if within sunset window (±45m)", ["city"])
 G_SUNSET_PROB = Gauge("sunset_probability", "Heuristic probability of good sunset (0-1)", ["city"])
 
-# Configurable weights (tweakable)
-WEIGHTS = {
-    "cloud": 0.45,
-    "precip": 0.20,
-    "air": 0.20,
-    "time": 0.15
-}
-
-# Helper clamp ??
-def clamp01(x):
-    return max(0.0, min(1.0, x))
-
 # Weather API call
 def get_weather(city):
     """
@@ -126,6 +114,55 @@ def get_openmeteo_air_quality(lat, lon, timezone="Europe/London"):
 ## precip score
 ## air score
 
+# Configurable weights (tweakable)
+WEIGHTS = {
+    "cloud": 0.45,
+    "precip": 0.20,
+    "air": 0.20,
+    "time": 0.15 # remove
+}
+
+# Helper clamp ??
+def clamp01(x):
+    return max(0.0, min(1.0, x))
+
+def cloud_layer_score(clow, cmid, chigh):
+    # Normalize to 0-1
+    low_score = 1 - (clow / 100.0)
+    mid_score = cmid/100
+    high_score = chigh/100
+
+    return clamp01((0.3*low_score + 0.3*mid_score + 0.4*high_score))
+
+def precipitation_score(precip_prob_pct):
+    return clamp01(1 - (precip_prob_pct / 100.0))
+
+def air_quality_score(pm25_ugm3, aod):
+    # Normalize PM2.5 to 0-50=good, >150=bad
+    pm_score = clamp01(1.0 - min(150, pm25_ugm3)/150) # cap at 150
+    aod_score = clamp01(1.0 - min(1.0, aod))  # AOD typically 0-1
+    air_score = 0.5*pm_score + 0.5*aod_score
+    return clamp01(air_score)
+
+def time_score(minutes_from_sunset):
+    # ideal is 0 (sunset time), linear dropoff to 0 at ±45 minutes
+    # might drop this out entirely, decide tomorrow
+    return clamp01(1 - (abs(minutes_from_sunset) / 60.0))
+
+def sunset_probability(clow, cmid, chigh, precip, pm25, aod):
+    cloud = cloud_layer_score(clow, cmid, chigh)
+    prec = precipitation_score(precip)
+    air  = air_quality_score(pm25, aod)
+
+    score = (
+        WEIGHTS["cloud"]  * cloud +
+        WEIGHTS["precip"] * prec +
+        WEIGHTS["air"]    * air
+    )
+
+    return clamp01(score)
+
+
 def compute(city):
     # Get weather data from weather api and open meteo
     # call funct to formulate final score
@@ -190,11 +227,51 @@ def update_city_metrics(city):
         print(f"[{city}] Couldnt find this city")
         return
     
+    # data from weather api
     G_TEMP.labels(city).set(raw["temp_c"])
     G_CLOUD.labels(city).set(raw["cloud_overall"])
     G_VIS.labels(city).set(raw["visibility_km"])
     G_HUM.labels(city).set(raw["humidity_pct"])
+#################################################
+    # determine sunset time from open meteo
+    try:
+        sunset_time = raw["forecast"]["sunset_daily"][0]
+        sunset_data = datetime.fromisoformat(sunset_time)
+    except:
+        print(f"[{city}] Couldnt parse sunset time")
+        return
 
+    # find nearest hour to sunset
+    hourly_times = raw["forecast"]["hourly_time"]
+    hourly_data = [datetime.fromisoformat(t) for t in hourly_times]
+
+    # find index with minimal abs diff to sunset
+    sunset_idx = min(
+        range(len(hourly_data)),
+        key=lambda i: abs((hourly_data[i] - sunset_data).total_seconds())
+    )
+
+    # extract sunset hour values
+    clow = raw["forecast"]["cloudcover_low"][sunset_idx]
+    cmid = raw["forecast"]["cloudcover_mid"][sunset_idx]
+    chigh = raw["forecast"]["cloudcover_high"][sunset_idx]
+    precip = raw["forecast"]["precipitation_probability"][sunset_idx]
+
+    # air quality hourly list may be shorter
+    aq_len = len(raw["air_quality"]["pm2_5"])
+    ap_idx = sunset_idx if sunset_idx < aq_len else aq_len - 1
+
+    pm25 = raw["air_quality"]["pm2_5"][ap_idx] if aq_len > 0 else 0
+    aod = raw["air_quality"]["aod"][ap_idx] if aq_len > 0 else 0
+
+    # compute probability score
+    prob = sunset_probability(clow, cmid, chigh, precip, pm25, aod)
+
+    # logging
+    print(f"[{city}] Sunset at {sunset_data.time()}, cloud low/mid/high: {clow}/{cmid}/{chigh}%, precip prob: {precip}%, pm2.5: {pm25}µg/m3, aod: {aod} -> sunset prob: {prob:.3f}")
+
+
+##################################################
     try:
         hourly_times = raw["forecast"]["hourly_time"]
         current_local = raw["localtime"]
@@ -210,7 +287,7 @@ def update_city_metrics(city):
     if raw["air_quality"]["aod"]:
         G_AOD.labels(city).set(raw["air_quality"]["aod"][hour_index])
 
-    G_SUNSET_PROB.labels(city).set(0) # nabeelah do this oneee
+    G_SUNSET_PROB.labels(city).set(prob) # nabeelah do this oneee
 
 
 if __name__ == "__main__":
