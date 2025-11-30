@@ -9,6 +9,7 @@ from pathlib import Path
 import json
 import threading
 
+
 # Threading stuff
 my_semaphore = threading.Semaphore()
 
@@ -27,19 +28,7 @@ def get_lat_long(city):
                 return dic[city][0], dic[city][1]
 
 
-def get_sunset_time_for_city(city):
-    cords = get_lat_long(city)
-    ret = requests.get("https://api.open-meteo.com/v1/forecast?latitude=" + str(cords[0]) + "&longitude=" + str(cords[1]) + "&daily=sunset&forecast_days=1&temporal_resolution=native")
-    return ret.json()["daily"]["sunset"][0]
-
-def get_sunrise_time_for_city(city):
-    cords = get_lat_long(city)
-    ret = requests.get("https://api.open-meteo.com/v1/forecast?latitude=" + str(cords[0]) + "&longitude=" + str(cords[1]) + "&daily=sunrise&forecast_days=1&temporal_resolution=native")
-    return ret.json()["daily"]["sunrise"][0]  
-
-def is_sunset_for_city(city):
-    # Define a city boundary
-    sunset_time = get_sunset_time_for_city(city)
+def is_sunset_for_city(sunset_time):
     sunset_time_struct = time.strptime(sunset_time, "%Y-%m-%dT%H:%M")
     sunset_epoch = calendar.timegm(sunset_time_struct)
     current_epoch = time.time()
@@ -51,36 +40,54 @@ def is_sunset_for_city(city):
         return True
 
 
-def is_sunrise_for_city(city):
-    # Define a city boundary
-    sunset_time = get_sunrise_time_for_city(city)
-    sunset_time_struct = time.strptime(sunset_time, "%Y-%m-%dT%H:%M")
-    sunset_epoch = calendar.timegm(sunset_time_struct)
+def is_sunrise_for_city(sunrise_time):
+    sunrise_time_struct = time.strptime(sunrise_time, "%Y-%m-%dT%H:%M")
+    sunrise_epoch = calendar.timegm(sunrise_time_struct)
     current_epoch = time.time()
-    seconds_diff = abs(int(current_epoch) - sunset_epoch)
+    seconds_diff = abs(int(current_epoch) - sunrise_epoch)
     hours_between = seconds_diff / 60 / 60
     if hours_between > 1:
         return False
     else: 
         return True
 
-def get_cities_with_sunsets_and_sunrises():
+def return_req_obj(city):
+    lat_long = get_lat_long(city)
+    ret = requests.get("https://api.open-meteo.com/v1/forecast?latitude=52.52&longitude=13.41&daily=sunset,sunrise&current=rain,relative_humidity_2m&forecast_days=1")
+    return ret.json()
+
+def get_data_into_object():
     objs = []
     with open("uk_cities.txt", "r") as file:   
         cities_array = list(map(lambda x: x.rstrip("\n"), file.readlines()))
-        for city in cities_array:            
-            is_sunset = is_sunset_for_city(city)
-            is_sunrise = is_sunrise_for_city(city)     
-            objs.append({city: [is_sunrise, is_sunset]})
+        for city in cities_array:    
+            res = return_req_obj(city)
+            lat_long = get_lat_long(city) 
+            current_time_struct = time.gmtime(time.time())
+            current_time_str = str(current_time_struct.tm_year) \
+            + "-" + str(current_time_struct.tm_mon) \
+            + "-" + str(current_time_struct.tm_mday) \
+            + "T" + str(current_time_struct.tm_hour) \
+            + ":" + str(current_time_struct.tm_min)  \
+            + ":" + str(current_time_struct.tm_sec) \
+            + "Z"
+            objs.append({"name": city, 
+                         "is_sunrise": is_sunrise_for_city(res["daily"]["sunrise"][0]), 
+                         "is_sunset": is_sunset_for_city(res["daily"]["sunset"][0]), 
+                         "lat": lat_long[0], 
+                         "long": lat_long[1], 
+                         "created_at": current_time_str,
+                         "rain": res["current"]["rain"],
+                         "humidity": res["current"]["relative_humidity_2m"]
+                         })
     return objs
 
 def update_cities_json():
-    
+    obj = get_data_into_object()
+    my_semaphore.acquire()
     with open("./json_data/data.json", "w") as file:
-        obj = get_cities_with_sunsets_and_sunrises()
-        my_semaphore.acquire()
         json.dump(obj, file)
-        my_semaphore.release()
+    my_semaphore.release()
     
         
 
@@ -89,12 +96,13 @@ class My_Handler(server.SimpleHTTPRequestHandler):
         super().__init__(request, client_address, server, directory=directory)
     
     def do_GET(self):
-        my_semaphore.acquire()
+        
         if self.path != "/json_data/data.json":
             self.send_error(403)
         else:
+            my_semaphore.acquire()
             super().do_GET()
-        my_semaphore.release()
+            my_semaphore.release()
         
 
 
@@ -110,9 +118,9 @@ if __name__ == "__main__":
     print("starting server")
     update_thread = threading.Thread(target=update_cities_json)
     server_thread = threading.Thread(target=run)
-    run()
+    server_thread.run()
     update_thread.start()
-    
+
 
             
 
