@@ -8,7 +8,10 @@ import calendar
 from pathlib import Path
 import json
 import threading
+from prometheus_client import Summary, start_http_server
 
+
+REQUEST_TIME = Summary('request_processing_seconds', 'Time spent processing request')
 
 # Threading stuff
 my_semaphore = threading.Semaphore()
@@ -51,9 +54,11 @@ def is_sunrise_for_city(sunrise_time):
     else: 
         return True
 
+@REQUEST_TIME.time()
 def return_req_obj(city):
     lat_long = get_lat_long(city)
-    ret = requests.get("https://api.open-meteo.com/v1/forecast?latitude=52.52&longitude=13.41&daily=sunset,sunrise&current=rain,relative_humidity_2m&forecast_days=1")
+
+    ret = requests.get("https://api.open-meteo.com/v1/forecast?latitude=" + str(lat_long[0]) + "&longitude=" + str(lat_long[1]) + "&daily=sunset,sunrise&current=rain,relative_humidity_2m&forecast_days=1")
     return ret.json()
 
 def get_data_into_object():
@@ -114,6 +119,7 @@ def run():
 
 
 if __name__ == "__main__":
+    start_http_server(8500)
     update_cities_json()
     print("starting server")
     update_thread = threading.Thread(target=update_cities_json)
